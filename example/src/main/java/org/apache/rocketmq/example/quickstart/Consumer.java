@@ -22,12 +22,14 @@ import org.apache.rocketmq.client.consumer.listener.MessageListenerConcurrently;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
 
+import java.nio.charset.StandardCharsets;
+
 /**
  * This example shows how to subscribe and consume messages using providing {@link DefaultMQPushConsumer}.
  */
 public class Consumer {
 
-    public static final String CONSUMER_GROUP = "please_rename_unique_group_name_4";
+    public static final String CONSUMER_GROUP = "consumer_group_quickstart";
     public static final String DEFAULT_NAMESRVADDR = "127.0.0.1:9876";
     public static final String TOPIC = "TopicTest";
 
@@ -50,7 +52,7 @@ public class Consumer {
          * </pre>
          */
         // Uncomment the following line while debugging, namesrvAddr should be set to your local address
-//        consumer.setNamesrvAddr(DEFAULT_NAMESRVADDR);
+        consumer.setNamesrvAddr(DEFAULT_NAMESRVADDR);
 
         /*
          * Specify where to start in case the specific consumer group is a brand-new one.
@@ -66,7 +68,7 @@ public class Consumer {
          *  Register callback to execute on arrival of messages fetched from brokers.
          */
         consumer.registerMessageListener((MessageListenerConcurrently) (msg, context) -> {
-            System.out.printf("%s Receive New Messages: %s %n", Thread.currentThread().getName(), msg);
+            System.out.printf("%s Receive New Messages: %s %n", Thread.currentThread().getName(), new String(msg.get(0).getBody(), StandardCharsets.UTF_8));
             return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
         });
 
