@@ -44,19 +44,30 @@ import org.apache.rocketmq.store.util.LibC;
 import sun.nio.ch.DirectBuffer;
 
 public class MappedFile extends ReferenceResource {
+    // pagecache 的默认大小即为 4kb
     public static final int OS_PAGE_SIZE = 1024 * 4;
     protected static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 
     private static final AtomicLong TOTAL_MAPPED_VIRTUAL_MEMORY = new AtomicLong(0);
 
     private static final AtomicInteger TOTAL_MAPPED_FILES = new AtomicInteger(0);
+
+    /**
+     * 写入位置
+     */
     protected final AtomicInteger wrotePosition = new AtomicInteger(0);
     protected final AtomicInteger committedPosition = new AtomicInteger(0);
     private final AtomicInteger flushedPosition = new AtomicInteger(0);
+    /**
+     * 文件的大小, 例如：
+     * D:\WangYunFei\Tools\rocketmq\storem-b\consumequeue\topic_learning\0\00000000000000000000
+     * D:\WangYunFei\Tools\rocketmq\storem-b\commitlog\00000000000000000000
+     */
     protected int fileSize;
     protected FileChannel fileChannel;
     /**
      * Message will put to here first, and then reput to FileChannel if writeBuffer is not null.
+     * 消息将首先放在这里，如果writeBuffer不为空，则重新放置到 FileChannel。
      */
     protected ByteBuffer writeBuffer = null;
     protected TransientStorePool transientStorePool = null;
@@ -159,17 +170,27 @@ public class MappedFile extends ReferenceResource {
         this.transientStorePool = transientStorePool;
     }
 
+    /**
+     *
+     * @param fileName
+     * @param fileSize messageQueue 默认是 48mb {@link MessageStoreConfig#getMappedFileSizeConsumeQueueExt()}
+     *                 commitLog 默认是 1G {@link MessageStoreConfig#getMappedFileSizeCommitLog()}
+     * @throws IOException
+     */
     private void init(final String fileName, final int fileSize) throws IOException {
         this.fileName = fileName;
         this.fileSize = fileSize;
         this.file = new File(fileName);
+        log.warn("初始化 MappedFile, [this.file = {}] [this.fileSize = {}]", file.getAbsolutePath(), fileSize);
         this.fileFromOffset = Long.parseLong(this.file.getName());
         boolean ok = false;
 
         ensureDirOK(this.file.getParent());
 
         try {
+            // 获取该文件的 fileChannel
             this.fileChannel = new RandomAccessFile(this.file, "rw").getChannel();
+            // 获取该文件名的 mmap
             this.mappedByteBuffer = this.fileChannel.map(MapMode.READ_WRITE, 0, fileSize);
             TOTAL_MAPPED_VIRTUAL_MEMORY.addAndGet(fileSize);
             TOTAL_MAPPED_FILES.incrementAndGet();
@@ -499,13 +520,23 @@ public class MappedFile extends ReferenceResource {
         this.committedPosition.set(pos);
     }
 
+    /**
+     * 文件 mmap 的预热
+     * @param type
+     * @param pages
+     */
     public void warmMappedFile(FlushDiskType type, int pages) {
         long beginTime = System.currentTimeMillis();
+        // 返回一个新的缓冲区映射
         ByteBuffer byteBuffer = this.mappedByteBuffer.slice();
         int flush = 0;
         long time = System.currentTimeMillis();
+
+        // 遍历文件大小, 写入0来创建文件的 pageCache, 每次写入 4kb
         for (int i = 0, j = 0; i < this.fileSize; i += MappedFile.OS_PAGE_SIZE, j++) {
             byteBuffer.put(i, (byte) 0);
+
+            // 如果是双写同步的, 直接将mmap中的数据写入
             // force flush when flush disk type is sync
             if (type == FlushDiskType.SYNC_FLUSH) {
                 if ((i / OS_PAGE_SIZE) - (flush / OS_PAGE_SIZE) >= pages) {
@@ -527,6 +558,7 @@ public class MappedFile extends ReferenceResource {
         }
 
         // force flush when prepare load finished
+        // 把剩余的数据强制刷新到磁盘中
         if (type == FlushDiskType.SYNC_FLUSH) {
             log.info("mapped file warm-up done, force to disk, mappedFile={}, costTime={}",
                 this.getFileName(), System.currentTimeMillis() - beginTime);
@@ -535,6 +567,7 @@ public class MappedFile extends ReferenceResource {
         log.info("mapped file warm-up done. mappedFile={}, costTime={}", this.getFileName(),
             System.currentTimeMillis() - beginTime);
 
+        // 防止文件所使用的 pageCache 被回收
         this.mlock();
     }
 
@@ -567,11 +600,13 @@ public class MappedFile extends ReferenceResource {
         final long address = ((DirectBuffer) (this.mappedByteBuffer)).address();
         Pointer pointer = new Pointer(address);
         {
+            // 将锁住指定的内存区域避免被操作系统调到 swap 空间中。
             int ret = LibC.INSTANCE.mlock(pointer, new NativeLong(this.fileSize));
             log.info("mlock {} {} {} ret = {} time consuming = {}", address, this.fileName, this.fileSize, ret, System.currentTimeMillis() - beginTime);
         }
 
         {
+            // madvise() 函数建议内核，在从 addr 指定的地址开始，长度等于 len 参数值的范围内，该区域的用户虚拟内存应遵循特定的使用模式。
             int ret = LibC.INSTANCE.madvise(pointer, new NativeLong(this.fileSize), LibC.MADV_WILLNEED);
             log.info("madvise {} {} {} ret = {} time consuming = {}", address, this.fileName, this.fileSize, ret, System.currentTimeMillis() - beginTime);
         }
