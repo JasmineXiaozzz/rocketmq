@@ -59,6 +59,8 @@ public interface MessageStore {
      *  rather than wait for result
      *  when result is completed, notify the client in async manner
      *
+     *  以异步方式将消息存储到Store中，处理器可以处理下一个请求，而不是等待结果完成时，以异步方式通知客户端
+     *
      * @param msg MessageInstance to store
      * @return a CompletableFuture for the result of store operation
      */
@@ -94,6 +96,8 @@ public interface MessageStore {
     /**
      * Query at most <code>maxMsgNums</code> messages belonging to <code>topic</code> at <code>queueId</code> starting
      * from given <code>offset</code>. Resulting messages will further be screened using provided message filter.
+     *
+     * 查询从给定偏移量开始的属于queueId的topic的最多 [maxMsgNums] 条消息。生成的消息将使用提供的消息过滤器进一步筛选。
      *
      * @param group Consumer group that launches this query.
      * @param topic Topic to query.

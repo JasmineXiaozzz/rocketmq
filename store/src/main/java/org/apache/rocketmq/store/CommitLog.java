@@ -613,7 +613,7 @@ public class CommitLog {
         }
     }
 
-    public CompletableFuture<PutMessageResult> asyncPutMessage(final MessageExtBrokerInner msg) {
+    public CompletableFuture<PutMessageResult> asyncPutMessage(final MessageExtBrokerInner msg)  {
         // Set the storage time
         msg.setStoreTimestamp(System.currentTimeMillis());
         // Set the message body BODY CRC (consider the most appropriate setting

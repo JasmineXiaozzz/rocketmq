@@ -184,12 +184,13 @@ public class AllocateMappedFileService extends ServiceThread {
                 }
 
                 // pre write mappedFile
-                if (mappedFile.getFileSize() >= this.messageStore.getMessageStoreConfig()
-                    .getMappedFileSizeCommitLog()
-                    &&
+                // 如果 mappedFile 文件大小 >= 1G && 开启文件预热
+                if (mappedFile.getFileSize() >= this.messageStore.getMessageStoreConfig().getMappedFileSizeCommitLog() &&
                     this.messageStore.getMessageStoreConfig().isWarmMapedFileEnable()) {
-                    mappedFile.warmMappedFile(this.messageStore.getMessageStoreConfig().getFlushDiskType(),
-                        this.messageStore.getMessageStoreConfig().getFlushLeastPagesWhenWarmMapedFile());
+                    mappedFile.warmMappedFile(
+                        this.messageStore.getMessageStoreConfig().getFlushDiskType(),
+                        this.messageStore.getMessageStoreConfig().getFlushLeastPagesWhenWarmMapedFile()
+                    );
                 }
 
                 req.setMappedFile(mappedFile);

@@ -112,6 +112,9 @@ import org.apache.rocketmq.store.stats.BrokerStats;
 import org.apache.rocketmq.store.stats.BrokerStatsManager;
 import org.apache.rocketmq.store.stats.LmqBrokerStatsManager;
 
+/**
+ * Broker 的管理中心
+ */
 public class BrokerController {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.BROKER_LOGGER_NAME);
     private static final InternalLogger LOG_PROTECTION = InternalLoggerFactory.getLogger(LoggerName.PROTECTION_LOGGER_NAME);
@@ -152,6 +155,9 @@ public class BrokerController {
     private final BrokerFastFailure brokerFastFailure;
     private final Configuration configuration;
     private final Map<Class, AccessValidator> accessValidatorMap = new HashMap<Class, AccessValidator>();
+    /**
+     * DefaultMessageStore
+     */
     private MessageStore messageStore;
     private RemotingServer remotingServer;
     private RemotingServer fastRemotingServer;
@@ -175,6 +181,13 @@ public class BrokerController {
     private AbstractTransactionalMessageCheckListener transactionalMessageCheckListener;
     private Future<?> slaveSyncFuture;
 
+    /**
+     * 创建 broker
+     * @param brokerConfig
+     * @param nettyServerConfig
+     * @param nettyClientConfig
+     * @param messageStoreConfig
+     */
     public BrokerController(
         final BrokerConfig brokerConfig,
         final NettyServerConfig nettyServerConfig,
@@ -240,6 +253,9 @@ public class BrokerController {
         return queryThreadPoolQueue;
     }
 
+    /**
+     * broker 相关类初始化
+     */
     public boolean initialize() throws CloneNotSupportedException {
         boolean result = this.topicConfigManager.load();
 
@@ -249,6 +265,7 @@ public class BrokerController {
 
         if (result) {
             try {
+                // 初始化 message 仓库
                 this.messageStore =
                     new DefaultMessageStore(this.messageStoreConfig, this.brokerStatsManager, this.messageArrivingListener,
                         this.brokerConfig);
@@ -484,12 +501,18 @@ public class BrokerController {
         return result;
     }
 
+    /**
+     * 初始化事务消息相关
+     */
     private void initialTransaction() {
+        // TransactionalMessageServiceImpl
         this.transactionalMessageService = ServiceProvider.loadClass(ServiceProvider.TRANSACTION_SERVICE_ID, TransactionalMessageService.class);
         if (null == this.transactionalMessageService) {
             this.transactionalMessageService = new TransactionalMessageServiceImpl(new TransactionalMessageBridge(this, this.getMessageStore()));
             log.warn("Load default transaction message hook service: {}", TransactionalMessageServiceImpl.class.getSimpleName());
         }
+
+        // DefaultTransactionalMessageCheckListener
         this.transactionalMessageCheckListener = ServiceProvider.loadClass(ServiceProvider.TRANSACTION_LISTENER_ID, AbstractTransactionalMessageCheckListener.class);
         if (null == this.transactionalMessageCheckListener) {
             this.transactionalMessageCheckListener = new DefaultTransactionalMessageCheckListener();
@@ -544,6 +567,8 @@ public class BrokerController {
     public void registerProcessor() {
         /**
          * SendMessageProcessor
+         * 这个处理器被用来专门处理发送消息请求，也就是说Producer的发送消息类请求都是通过这个处理器来处理的。这些处理器会连同对应的执行器线程
+         * 池一起构建一个Pair对象，然后以requestCode为key，Pair对象为value注册到processorTable集合缓存中。
          */
         SendMessageProcessor sendProcessor = new SendMessageProcessor(this);
         sendProcessor.registerSendMessageHook(sendMessageHookList);
@@ -850,7 +875,11 @@ public class BrokerController {
         return this.brokerConfig.getBrokerIP1() + ":" + this.nettyServerConfig.getListenPort();
     }
 
+    /**
+     * Broker 启动
+     */
     public void start() throws Exception {
+        // DefaultMessageStore
         if (this.messageStore != null) {
             this.messageStore.start();
         }

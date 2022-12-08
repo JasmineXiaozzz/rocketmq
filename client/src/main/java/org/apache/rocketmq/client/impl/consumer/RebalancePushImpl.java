@@ -47,6 +47,12 @@ public class RebalancePushImpl extends RebalanceImpl {
         this.defaultMQPushConsumerImpl = defaultMQPushConsumerImpl;
     }
 
+    /**
+     * 客户端的消息队列发生了变化
+     * @param topic 主题
+     * @param mqAll 所有队列
+     * @param mqDivided doRebalance 后的结果
+     */
     @Override
     public void messageQueueChanged(String topic, Set<MessageQueue> mqAll, Set<MessageQueue> mqDivided) {
         /**
@@ -81,24 +87,32 @@ public class RebalancePushImpl extends RebalanceImpl {
         this.getmQClientFactory().sendHeartbeatToAllBrokerWithLock();
     }
 
+    /**
+     * 删除客户端没必要的队列，并且释放 broker 的锁
+     * @param mq 消息队列
+     * @param pq 处理队列
+     * @return 是否删除成功
+     */
     @Override
     public boolean removeUnnecessaryMessageQueue(MessageQueue mq, ProcessQueue pq) {
+        // 持久化偏移量, 如果是集群消息, 将偏移量保存至 Broker
         this.defaultMQPushConsumerImpl.getOffsetStore().persist(mq);
+        // 从该消费者中删除这个MessageQueue, 从 offsetTable 中删除
         this.defaultMQPushConsumerImpl.getOffsetStore().removeOffset(mq);
-        if (this.defaultMQPushConsumerImpl.isConsumeOrderly()
-            && MessageModel.CLUSTERING.equals(this.defaultMQPushConsumerImpl.messageModel())) {
+        // 如果该消费者是顺序消息
+        if (this.defaultMQPushConsumerImpl.isConsumeOrderly() && MessageModel.CLUSTERING.equals(this.defaultMQPushConsumerImpl.messageModel())) {
             try {
+                // 处理队列需要加锁, 加 PQ_consumeLock, 消费锁加锁
                 if (pq.getConsumeLock().tryLock(1000, TimeUnit.MILLISECONDS)) {
                     try {
+                        //
                         return this.unlockDelay(mq, pq);
                     } finally {
+                        // 消费锁解锁
                         pq.getConsumeLock().unlock();
                     }
                 } else {
-                    log.warn("[WRONG]mq is consuming, so can not unlock it, {}. maybe hanged for a while, {}",
-                        mq,
-                        pq.getTryUnlockTimes());
-
+                    log.warn("[WRONG]mq is consuming, so can not unlock it, {}. maybe hanged for a while, {}", mq, pq.getTryUnlockTimes());
                     pq.incTryUnlockTimes();
                 }
             } catch (Exception e) {

@@ -542,11 +542,15 @@ public class ConsumeQueue {
     }
 
     public SelectMappedBufferResult getIndexBuffer(final long startIndex) {
+        // 消息队列的长度, 通常是 48MB
         int mappedFileSize = this.mappedFileSize;
+        // 获取真正的 byte offset, 传入的是消息位点
         long offset = startIndex * CQ_STORE_UNIT_SIZE;
         if (offset >= this.getMinLogicOffset()) {
+            // 获取 mapperFile
             MappedFile mappedFile = this.mappedFileQueue.findMappedFileByOffset(offset);
             if (mappedFile != null) {
+                // 偏移量 / 48mb 取余, 也就是从当前位置读取到结束
                 return mappedFile.selectMappedBuffer((int) (offset % mappedFileSize));
             }
         }

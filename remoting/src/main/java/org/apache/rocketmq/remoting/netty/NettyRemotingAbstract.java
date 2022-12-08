@@ -185,26 +185,40 @@ public abstract class NettyRemotingAbstract {
 
     /**
      * Process incoming request command issued by remote peer.
+     * 分发发来的请求。
+     * 客户端会处理 broker 发来的请求
+     * broker 也会处理客户端发来的请求
      *
      * @param ctx channel handler context.
      * @param cmd request command.
      */
     public void processRequestCommand(final ChannelHandlerContext ctx, final RemotingCommand cmd) {
         final Pair<NettyRequestProcessor, ExecutorService> matched = this.processorTable.get(cmd.getCode());
+        // 获取命令和命令处理器
         final Pair<NettyRequestProcessor, ExecutorService> pair = null == matched ? this.defaultRequestProcessor : matched;
+        //获取该请求的唯一id
         final int opaque = cmd.getOpaque();
 
+
         if (pair != null) {
+            // 用命令对应的 ExecutorService 来运行该线程
             Runnable run = new Runnable() {
                 @Override
                 public void run() {
                     try {
+                        //获取远程地址
                         String remoteAddr = RemotingHelper.parseChannelRemoteAddr(ctx.channel());
+                        //执行前置钩子方法
                         doBeforeRpcHooks(remoteAddr, cmd);
+                        /*
+                         * 创建响应回调函数
+                         */
                         final RemotingResponseCallback callback = new RemotingResponseCallback() {
                             @Override
                             public void callback(RemotingCommand response) {
+                                //执行后置钩子方法
                                 doAfterRpcHooks(remoteAddr, cmd, response);
+                                //如果不是单向消息
                                 if (!cmd.isOnewayRPC()) {
                                     if (response != null) {
                                         response.setOpaque(opaque);
@@ -223,9 +237,12 @@ public abstract class NettyRemotingAbstract {
                             }
                         };
                         if (pair.getObject1() instanceof AsyncNettyRequestProcessor) {
+                            // 如果处理器是异步请求处理器，那么调用异步处理的方法asyncProcessRequest
+                            // SendMessageProcessor 就是一个异步消息处理器
                             AsyncNettyRequestProcessor processor = (AsyncNettyRequestProcessor)pair.getObject1();
                             processor.asyncProcessRequest(ctx, cmd, callback);
                         } else {
+                            // 如果处理器不是异步请求处理器，那么调用同步处理的方法processRequest获取响应，然后同步调用callback回调方法
                             NettyRequestProcessor processor = pair.getObject1();
                             RemotingCommand response = processor.processRequest(ctx, cmd);
                             callback.callback(response);
@@ -233,7 +250,7 @@ public abstract class NettyRemotingAbstract {
                     } catch (Throwable e) {
                         log.error("process request exception", e);
                         log.error(cmd.toString());
-
+                        //如果不是单向的请求，那么返回系统异常的响应SYSTEM_ERROR
                         if (!cmd.isOnewayRPC()) {
                             final RemotingCommand response = RemotingCommand.createResponseCommand(RemotingSysResponseCode.SYSTEM_ERROR,
                                 RemotingHelper.exceptionSimpleDesc(e));
@@ -244,6 +261,9 @@ public abstract class NettyRemotingAbstract {
                 }
             };
 
+            /*
+             * 2 如果该请求处理器拒绝该请求，那么返回系统繁忙的响应SYSTEM_BUSY
+             */
             if (pair.getObject1().rejectRequest()) {
                 final RemotingCommand response = RemotingCommand.createResponseCommand(RemotingSysResponseCode.SYSTEM_BUSY,
                     "[REJECTREQUEST]system busy, start flow control for a while");
@@ -252,8 +272,12 @@ public abstract class NettyRemotingAbstract {
                 return;
             }
 
+            /*
+             * 3 构建请求线程任务，然后通过执行器线程池执行
+             */
             try {
                 final RequestTask requestTask = new RequestTask(run, ctx.channel(), cmd);
+                // 交由 cmd 命令的线程池来执行
                 pair.getObject2().submit(requestTask);
             } catch (RejectedExecutionException e) {
                 if ((System.currentTimeMillis() % 10000) == 0) {
@@ -271,6 +295,7 @@ public abstract class NettyRemotingAbstract {
                 }
             }
         } else {
+            //没找到任何请求处理器，返回不支持该请求code的响应
             String error = " request type " + cmd.getCode() + " not supported";
             final RemotingCommand response =
                 RemotingCommand.createResponseCommand(RemotingSysResponseCode.REQUEST_CODE_NOT_SUPPORTED, error);
@@ -448,9 +473,9 @@ public abstract class NettyRemotingAbstract {
         }
     }
 
-    public void invokeAsyncImpl(final Channel channel, final RemotingCommand request, final long timeoutMillis,
-        final InvokeCallback invokeCallback)
+    public void invokeAsyncImpl(final Channel channel, final RemotingCommand request, final long timeoutMillis, final InvokeCallback invokeCallback)
         throws InterruptedException, RemotingTooMuchRequestException, RemotingTimeoutException, RemotingSendRequestException {
+
         long beginStartTime = System.currentTimeMillis();
         final int opaque = request.getOpaque();
         boolean acquired = this.semaphoreAsync.tryAcquire(timeoutMillis, TimeUnit.MILLISECONDS);
@@ -462,10 +487,14 @@ public abstract class NettyRemotingAbstract {
                 throw new RemotingTimeoutException("invokeAsyncImpl call timeout");
             }
 
+            //
             final ResponseFuture responseFuture = new ResponseFuture(channel, opaque, timeoutMillis - costTime, invokeCallback, once);
             this.responseTable.put(opaque, responseFuture);
             try {
                 channel.writeAndFlush(request).addListener(new ChannelFutureListener() {
+                    /**
+                     * 发送完成后
+                     */
                     @Override
                     public void operationComplete(ChannelFuture f) throws Exception {
                         if (f.isSuccess()) {

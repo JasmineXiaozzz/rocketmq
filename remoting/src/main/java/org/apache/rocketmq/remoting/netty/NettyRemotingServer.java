@@ -300,6 +300,12 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
         }
     }
 
+    /**
+     * 注册消息处理器
+     * @param requestCode 消息的类型
+     * @param processor 对应的处理器
+     * @param executor 线程池
+     */
     @Override
     public void registerProcessor(int requestCode, NettyRequestProcessor processor, ExecutorService executor) {
         ExecutorService executorThis = executor;
@@ -307,7 +313,12 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
             executorThis = this.publicExecutor;
         }
 
+        /**
+         * SendMessageProcessor 为 key
+         * 一个线程池为 value
+         */
         Pair<NettyRequestProcessor, ExecutorService> pair = new Pair<NettyRequestProcessor, ExecutorService>(processor, executorThis);
+        //存入
         this.processorTable.put(requestCode, pair);
     }
 

@@ -81,24 +81,46 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor {
         return response;
     }
 
+    /**
+     * SendMessageProcessor的方法
+     * <p>
+     * 异步处理请求，默认走该方法
+     */
     @Override
     public void asyncProcessRequest(ChannelHandlerContext ctx, RemotingCommand request, RemotingResponseCallback responseCallback) throws Exception {
-        asyncProcessRequest(ctx, request).thenAcceptAsync(responseCallback::callback, this.brokerController.getPutMessageFutureExecutor());
+        //调用 asyncProcessRequest 处理请求，然后调用thenAcceptAsync异步的执行回调
+        asyncProcessRequest(ctx, request)
+                .thenAcceptAsync(responseCallback::callback, this.brokerController.getPutMessageFutureExecutor());
     }
 
+    /**
+     * SendMessageProcessor的方法
+     * <p>
+     * 异步的处理请求
+     * asyncProcessRequest方法根据不同的RequestCode异步处理请求。
+     * <p>如果RequestCode是CONSUMER_SEND_MSG_BACK，即消费者发送的消息回退请求，那么调用asyncConsumerSendMsgBack方法处理，其他情况下走默认处理逻辑。
+     * <p>默认处理逻辑中，首先解析请求头，然后构建发送请求消息轨迹上下文，随后执行发送消息前钩子方法，最后判断如果是批量消息请求，那么调用asyncSendBatchMessage方法执行处理批量发送消息逻辑，否则调用asyncSendMessage方法处理其他发送消息逻辑，例如单条消息。
+     */
     public CompletableFuture<RemotingCommand> asyncProcessRequest(ChannelHandlerContext ctx,
                                                                   RemotingCommand request) throws RemotingCommandException {
         final SendMessageContext mqtraceContext;
         switch (request.getCode()) {
+            /*
+             * 如果 RequestCode 是CONSUMER_SEND_MSG_BACK，即消费者发送的消息回退请求，那么调用asyncConsumerSendMsgBack方法处理，其他
+             * 情况下走默认处理逻辑。
+             */
             case RequestCode.CONSUMER_SEND_MSG_BACK:
                 return this.asyncConsumerSendMsgBack(ctx, request);
             default:
+                // 解析请求头
                 SendMessageRequestHeader requestHeader = parseRequestHeader(request);
                 if (requestHeader == null) {
                     return CompletableFuture.completedFuture(null);
                 }
+                // 构建 trace 信息
                 mqtraceContext = buildMsgContext(ctx, requestHeader);
                 this.executeSendMessageHookBefore(ctx, request, mqtraceContext);
+                // 如果是批量发送
                 if (requestHeader.isBatch()) {
                     return this.asyncSendBatchMessage(ctx, request, mqtraceContext, requestHeader);
                 } else {
@@ -262,34 +284,52 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor {
         });
     }
 
-
+    /**
+     * 异步处理消息
+     * @param ctx
+     * @param request
+     * @param mqtraceContext
+     * @param requestHeader
+     * @return
+     */
     private CompletableFuture<RemotingCommand> asyncSendMessage(ChannelHandlerContext ctx, RemotingCommand request,
                                                                 SendMessageContext mqtraceContext,
                                                                 SendMessageRequestHeader requestHeader) {
+        // 1. 校验消息, 返回 response
         final RemotingCommand response = preSend(ctx, request, requestHeader);
         final SendMessageResponseHeader responseHeader = (SendMessageResponseHeader)response.readCustomHeader();
 
+        // 如果 response != -1,, 说明消息出了些问题, 如 topic 错误, broker 是否还不提供服务这些错误
         if (response.getCode() != -1) {
             return CompletableFuture.completedFuture(response);
         }
 
         final byte[] body = request.getBody();
 
+        // 队列ID
         int queueIdInt = requestHeader.getQueueId();
+        // topic 配置
         TopicConfig topicConfig = this.brokerController.getTopicConfigManager().selectTopicConfig(requestHeader.getTopic());
 
+        // 队列ID小于0, 则随机选一个
         if (queueIdInt < 0) {
             queueIdInt = randomQueueId(topicConfig.getWriteQueueNums());
         }
 
+        // 2. 构造一个消息, 主要是在Broker内部使用, 其实就是CommitLog中的消息格式
         MessageExtBrokerInner msgInner = new MessageExtBrokerInner();
         msgInner.setTopic(requestHeader.getTopic());
         msgInner.setQueueId(queueIdInt);
-
+        /*
+         * 3. 这一步主要是判断消息是否是发向重试队列的, 如果是发往重试队列, 则会校验是否超过最大重试次数, 如果超过了, 这一步就会将 topic 替换成
+         * %DLQ%consumer_group_name, 从而进入死信了
+         * 如果返回 false, 说明校验的时候出了些问题
+         */
         if (!handleRetryAndDLQ(requestHeader, response, request, msgInner, topicConfig)) {
             return CompletableFuture.completedFuture(response);
         }
 
+        // 4. 设置消息内容
         msgInner.setBody(body);
         msgInner.setFlag(requestHeader.getFlag());
         Map<String, String> origProps = MessageDecoder.string2messageProperties(requestHeader.getProperties());
@@ -300,6 +340,11 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor {
         msgInner.setReconsumeTimes(requestHeader.getReconsumeTimes() == null ? 0 : requestHeader.getReconsumeTimes());
         String clusterName = this.brokerController.getBrokerConfig().getBrokerClusterName();
         MessageAccessor.putProperty(msgInner, MessageConst.PROPERTY_CLUSTER, clusterName);
+
+        /*
+         * 这里主要判断 property 中没有wait配置项, 如果有, 将它从 propertiesString 这个字段中删除, propertiesString 字段才是最终会
+         * 存入文件的内容, 删掉他是为了节约消息所占用的空间, 约9byte; 随后又放回到 origProps 中, 是因为后面还要用
+         */
         if (origProps.containsKey(MessageConst.PROPERTY_WAIT_STORE_MSG_OK)) {
             // There is no need to store "WAIT=true", remove it from propertiesString to save 9 bytes for each message.
             // It works for most case. In some cases msgInner.setPropertiesString invoked later and replace it.
@@ -312,7 +357,9 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor {
         }
 
         CompletableFuture<PutMessageResult> putMessageResult = null;
+        // 事务消息的一阶段标识
         String transFlag = origProps.get(MessageConst.PROPERTY_TRANSACTION_PREPARED);
+        // 6. 如果事务一阶段, 使用 TransactionalMessageServiceImpl 来处理消息
         if (Boolean.parseBoolean(transFlag)) {
             if (this.brokerController.getBrokerConfig().isRejectTransactionMessage()) {
                 response.setCode(ResponseCode.NO_PERMISSION);
@@ -323,6 +370,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor {
             }
             putMessageResult = this.brokerController.getTransactionalMessageService().asyncPrepareMessage(msgInner);
         } else {
+            // 7. 如果不是事务消息, 调用 DefaultMessageStore 写入消息
             putMessageResult = this.brokerController.getMessageStore().asyncPutMessage(msgInner);
         }
         return handlePutMessageResultFuture(putMessageResult, response, request, msgInner, responseHeader, mqtraceContext, ctx, queueIdInt);
@@ -341,14 +389,30 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor {
         );
     }
 
+    /**
+     * 判断消息是否发送到重试队列, 发送到重试队列的消息要判断是否需要进入死信队列, 如果消息需要进入死信队列, 那么将替换消息的 topic 和 queueid
+     * 这样实际 store 时就进入死信队列了
+     *
+     * @param requestHeader
+     * @param response
+     * @param request
+     * @param msg
+     * @param topicConfig
+     * @return
+     */
     private boolean handleRetryAndDLQ(SendMessageRequestHeader requestHeader, RemotingCommand response,
                                       RemotingCommand request,
                                       MessageExt msg, TopicConfig topicConfig) {
+        // topic 名称
         String newTopic = requestHeader.getTopic();
+        // 发送的是重试主题
         if (null != newTopic && newTopic.startsWith(MixAll.RETRY_GROUP_TOPIC_PREFIX)) {
+            // 重试的主题是以 consumer 消费组名称命名的, 例如 %RETRY%consumer_group_learning, 这里获取到的就是消费者组了
             String groupName = newTopic.substring(MixAll.RETRY_GROUP_TOPIC_PREFIX.length());
+            // 消费者组配置
             SubscriptionGroupConfig subscriptionGroupConfig =
                 this.brokerController.getSubscriptionGroupManager().findSubscriptionGroupConfig(groupName);
+            // 没有配置, 消费者组不存在
             if (null == subscriptionGroupConfig) {
                 response.setCode(ResponseCode.SUBSCRIPTION_GROUP_NOT_EXIST);
                 response.setRemark(
@@ -356,14 +420,20 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor {
                 return false;
             }
 
+            // 重试次数
             int maxReconsumeTimes = subscriptionGroupConfig.getRetryMaxTimes();
+            // 重试次数以 Producer 配置的为主, 生产者默认是 -1, 即以 broker 配置的为主, 可以在生产者用 setMaxReconsumeTimes() 配置
             if (request.getVersion() >= MQVersion.Version.V3_4_9.ordinal() && requestHeader.getMaxReconsumeTimes() != null) {
                 maxReconsumeTimes = requestHeader.getMaxReconsumeTimes();
             }
+            // 消费次数
             int reconsumeTimes = requestHeader.getReconsumeTimes() == null ? 0 : requestHeader.getReconsumeTimes();
             if (reconsumeTimes >= maxReconsumeTimes) {
+                // 获取死信队列, 例如%DLQ%consumer_group_learning
                 newTopic = MixAll.getDLQTopic(groupName);
+                // 队列ID写死为0, 这里应该是为了以后拓展
                 int queueIdInt = ThreadLocalRandom.current().nextInt(99999999) % DLQ_NUMS_PER_GROUP;
+                // 死信队列的配置
                 topicConfig = this.brokerController.getTopicConfigManager().createTopicInSendMessageBackMethod(newTopic,
                     DLQ_NUMS_PER_GROUP,
                     PermName.PERM_WRITE | PermName.PERM_READ, 0
@@ -689,6 +759,13 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor {
         return ThreadLocalRandom.current().nextInt(99999999) % writeQueueNums;
     }
 
+    /**
+     * 前期处理, 主要是创建 response
+     * @param ctx
+     * @param request
+     * @param requestHeader
+     * @return
+     */
     private RemotingCommand preSend(ChannelHandlerContext ctx, RemotingCommand request,
                                     SendMessageRequestHeader requestHeader) {
         final RemotingCommand response = RemotingCommand.createResponseCommand(SendMessageResponseHeader.class);
@@ -709,6 +786,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor {
         }
 
         response.setCode(-1);
+        // 检查 msg 信息, 校验 topic 是否正确, queueId 是否正确等等
         super.msgCheck(ctx, requestHeader, response);
 
         return response;

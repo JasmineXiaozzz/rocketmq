@@ -173,10 +173,20 @@ public class AdminBrokerProcessor extends AsyncNettyRequestProcessor {
                 return this.getEarliestMsgStoretime(ctx, request);
             case RequestCode.GET_BROKER_RUNTIME_INFO:
                 return this.getBrokerRuntimeInfo(ctx, request);
-            case RequestCode.LOCK_BATCH_MQ:
+            case RequestCode.LOCK_BATCH_MQ: {
+                /**
+                 * MessageQueue 加锁
+                 */
                 return this.lockBatchMQ(ctx, request);
-            case RequestCode.UNLOCK_BATCH_MQ:
+            }
+
+            case RequestCode.UNLOCK_BATCH_MQ: {
+                /**
+                 * MessageQueue 解锁
+                 */
                 return this.unlockBatchMQ(ctx, request);
+            }
+
             case RequestCode.UPDATE_AND_CREATE_SUBSCRIPTIONGROUP:
                 return this.updateAndCreateSubscriptionGroup(ctx, request);
             case RequestCode.GET_ALL_SUBSCRIPTIONGROUP_CONFIG:
@@ -654,8 +664,14 @@ public class AdminBrokerProcessor extends AsyncNettyRequestProcessor {
         return response;
     }
 
-    private RemotingCommand lockBatchMQ(ChannelHandlerContext ctx,
-        RemotingCommand request) throws RemotingCommandException {
+    /**
+     *
+     * @param ctx
+     * @param request
+     * @return
+     * @throws RemotingCommandException
+     */
+    private RemotingCommand lockBatchMQ(ChannelHandlerContext ctx, RemotingCommand request) throws RemotingCommandException {
         final RemotingCommand response = RemotingCommand.createResponseCommand(null);
         LockBatchRequestBody requestBody = LockBatchRequestBody.decode(request.getBody(), LockBatchRequestBody.class);
 
@@ -673,8 +689,7 @@ public class AdminBrokerProcessor extends AsyncNettyRequestProcessor {
         return response;
     }
 
-    private RemotingCommand unlockBatchMQ(ChannelHandlerContext ctx,
-        RemotingCommand request) throws RemotingCommandException {
+    private RemotingCommand unlockBatchMQ(ChannelHandlerContext ctx, RemotingCommand request) throws RemotingCommandException {
         final RemotingCommand response = RemotingCommand.createResponseCommand(null);
         UnlockBatchRequestBody requestBody = UnlockBatchRequestBody.decode(request.getBody(), UnlockBatchRequestBody.class);
 

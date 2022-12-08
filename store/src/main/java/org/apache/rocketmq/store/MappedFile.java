@@ -173,8 +173,8 @@ public class MappedFile extends ReferenceResource {
     /**
      *
      * @param fileName
-     * @param fileSize messageQueue 默认是 48mb {@link MessageStoreConfig#getMappedFileSizeConsumeQueueExt()}
-     *                 commitLog 默认是 1G {@link MessageStoreConfig#getMappedFileSizeCommitLog()}
+     * @param fileSize <p>messageQueue 默认是 48mb {@link MessageStoreConfig#getMappedFileSizeConsumeQueueExt()}
+     *                 <p>commitLog 默认是 1G {@link MessageStoreConfig#getMappedFileSizeCommitLog()}
      * @throws IOException
      */
     private void init(final String fileName, final int fileSize) throws IOException {
@@ -522,23 +522,33 @@ public class MappedFile extends ReferenceResource {
 
     /**
      * 文件 mmap 的预热
-     * @param type
-     * @param pages
+     * @param type 文件写入类型
+     * @param pages 可以预热的页数
      */
     public void warmMappedFile(FlushDiskType type, int pages) {
+        System.out.println(this.file.getAbsolutePath() + ":" + pages);
         long beginTime = System.currentTimeMillis();
         // 返回一个新的缓冲区映射
         ByteBuffer byteBuffer = this.mappedByteBuffer.slice();
         int flush = 0;
         long time = System.currentTimeMillis();
 
-        // 遍历文件大小, 写入0来创建文件的 pageCache, 每次写入 4kb
+        /*
+         * i: i每次增加 4096, 然后在该位置写入0, 相当于在每个 PageCache 中写一个0, 最终会申请一个文件与文件大小相同的 PageCache, 这样
+         *    可以提高后续的读取次数, 避免后续产生页中断等问题。
+         *
+         * j: 写入次数, 每写入1000次, 给与一个SafePoint, 用来允许GC.
+         */
         for (int i = 0, j = 0; i < this.fileSize; i += MappedFile.OS_PAGE_SIZE, j++) {
+
+            // 在PageCache开始位置写入0
             byteBuffer.put(i, (byte) 0);
 
-            // 如果是双写同步的, 直接将mmap中的数据写入
             // force flush when flush disk type is sync
+            // 如果是同步刷盘
             if (type == FlushDiskType.SYNC_FLUSH) {
+
+                // 将数据写入文件
                 if ((i / OS_PAGE_SIZE) - (flush / OS_PAGE_SIZE) >= pages) {
                     flush = i;
                     mappedByteBuffer.force();
@@ -558,7 +568,7 @@ public class MappedFile extends ReferenceResource {
         }
 
         // force flush when prepare load finished
-        // 把剩余的数据强制刷新到磁盘中
+        // 同步刷盘, 把剩余的数据强制刷新到磁盘中
         if (type == FlushDiskType.SYNC_FLUSH) {
             log.info("mapped file warm-up done, force to disk, mappedFile={}, costTime={}",
                 this.getFileName(), System.currentTimeMillis() - beginTime);
